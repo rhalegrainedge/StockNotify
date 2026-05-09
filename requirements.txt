@@ -1,0 +1,23 @@
+# StockNotify — Python dependencies
+# Install: pip install -r requirements.txt
+
+# Core server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+websockets>=11.0
+
+# Data & streaming
+databento>=0.35.0
+pandas>=2.0.0
+pyarrow>=12.0.0
+
+# Alerts
+requests>=2.31.0
+pytz>=2024.1
+
+# Charts (Telegram alerts — server side)
+matplotlib>=3.7.0
+
+# Desktop chart (optional — only needed for the popup chart window)
+# PySide6>=6.5.0
+# pyqtgraph>=0.13.0

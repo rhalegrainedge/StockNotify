@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "stocknotify"
+version = "1.0.0"
+description = "Live US equity scanner — ORB retest, MACD, VWAP signals via Telegram"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "websockets>=11.0",
+    "databento>=0.35.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+    "requests>=2.31.0",
+    "pytz>=2024.1",
+    "matplotlib>=3.7.0",
+]
+
+[project.scripts]
+stocknotify = "stocknotify.runner:main"
+stocknotify-watchdog = "stocknotify.watchdog:run_forever"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stocknotify*"]
+
+[tool.setuptools.package-data]
+stocknotify = ["*.json"]

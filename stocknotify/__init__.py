@@ -1,0 +1,1 @@
+# StockNotify — standalone package
