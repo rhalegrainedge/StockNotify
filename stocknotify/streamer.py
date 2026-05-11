@@ -103,6 +103,18 @@ class StockStreamer(threading.Thread):
                     log.error(f"Streamer error: {exc} — reconnecting in 15s")
                     time.sleep(15)
 
+    # How long with no records during market hours before we force a reconnect
+    _STALE_RECONNECT_SECS = 300   # 5 minutes
+
+    @staticmethod
+    def _is_market_hours() -> bool:
+        """True if current ET time is between 9:25 and 16:05 on a weekday."""
+        now = datetime.now(ET)
+        if now.weekday() >= 5:          # Sat / Sun
+            return False
+        t = now.hour * 60 + now.minute
+        return (9 * 60 + 25) <= t <= (16 * 60 + 5)
+
     def _stream_once(self):
         import databento as db
 
@@ -130,6 +142,32 @@ class StockStreamer(threading.Thread):
         log.info(f"Connecting EQUS.MINI — tickers: {', '.join(tickers)}")
 
         client = db.Live(key=api_key)
+
+        # Watchdog: if no records arrive during market hours for N minutes, stop the
+        # client so the iterator exits and _stream_once returns → triggers reconnect.
+        last_record_time = [time.time()]
+        stop_watchdog    = threading.Event()
+
+        def _stale_watchdog():
+            while not stop_watchdog.is_set():
+                time.sleep(30)
+                if stop_watchdog.is_set():
+                    break
+                silent = time.time() - last_record_time[0]
+                if silent >= self._STALE_RECONNECT_SECS and self._is_market_hours():
+                    log.warning(
+                        f"No records for {silent:.0f}s during market hours — "
+                        "forcing stream reconnect"
+                    )
+                    try:
+                        client.stop()
+                    except Exception:
+                        pass
+                    break
+
+        watchdog_thread = threading.Thread(target=_stale_watchdog, daemon=True)
+        watchdog_thread.start()
+
         try:
             client.subscribe(
                 dataset=self.config.DATASET,
@@ -143,9 +181,11 @@ class StockStreamer(threading.Thread):
             for record in client:
                 if not self._running or self._force_reconnect:
                     break
+                last_record_time[0] = time.time()
                 self._dispatch(record)
 
         finally:
+            stop_watchdog.set()
             try:
                 client.stop()
             except Exception:
