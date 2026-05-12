@@ -167,8 +167,10 @@ class TickerState:
         self.orb30_low:  Optional[float] = None
         self.orb30_set:  bool = False
         self._orb30_bars: list = []
-        self._orb30_broke_up:       bool = False   # price closed above ORB30 high (silent)
-        self._orb30_broke_dn:       bool = False   # price closed below ORB30 low (silent)
+        self._orb30_broke_up:           bool = False   # price closed above ORB30 high (silent)
+        self._orb30_broke_dn:           bool = False   # price closed below ORB30 low (silent)
+        self._orb30_broke_up_bar_time:  Optional[datetime] = None  # bar_time of first break
+        self._orb30_broke_dn_bar_time:  Optional[datetime] = None
         self._alerted_orb30_ret_up: bool = False   # ORB_30_RETEST_HIGH fired
         self._alerted_orb30_ret_dn: bool = False   # ORB_30_RETEST_LOW fired
 
@@ -177,8 +179,10 @@ class TickerState:
         self.orb60_low:  Optional[float] = None
         self.orb60_set:  bool = False
         self._orb60_bars: list = []
-        self._orb60_broke_up:       bool = False
-        self._orb60_broke_dn:       bool = False
+        self._orb60_broke_up:           bool = False
+        self._orb60_broke_dn:           bool = False
+        self._orb60_broke_up_bar_time:  Optional[datetime] = None
+        self._orb60_broke_dn_bar_time:  Optional[datetime] = None
         self._alerted_orb60_ret_up: bool = False
         self._alerted_orb60_ret_dn: bool = False
 
@@ -214,19 +218,23 @@ class TickerState:
         self.orb30_low   = None
         self.orb30_set   = False
         self._orb30_bars = []
-        self._orb30_broke_up       = False
-        self._orb30_broke_dn       = False
-        self._alerted_orb30_ret_up = False
-        self._alerted_orb30_ret_dn = False
+        self._orb30_broke_up           = False
+        self._orb30_broke_dn           = False
+        self._orb30_broke_up_bar_time  = None
+        self._orb30_broke_dn_bar_time  = None
+        self._alerted_orb30_ret_up     = False
+        self._alerted_orb30_ret_dn     = False
 
         self.orb60_high  = None
         self.orb60_low   = None
         self.orb60_set   = False
         self._orb60_bars = []
-        self._orb60_broke_up       = False
-        self._orb60_broke_dn       = False
-        self._alerted_orb60_ret_up = False
-        self._alerted_orb60_ret_dn = False
+        self._orb60_broke_up           = False
+        self._orb60_broke_dn           = False
+        self._orb60_broke_up_bar_time  = None
+        self._orb60_broke_dn_bar_time  = None
+        self._alerted_orb60_ret_up     = False
+        self._alerted_orb60_ret_dn     = False
 
         # Carry today's H/L forward as prior-day H/L
         if self._today_high is not None:
@@ -319,8 +327,9 @@ class TickerState:
         self.wvwap = self._wvwap_pw / self._wvwap_vol if self._wvwap_vol > 0 else None
 
         # ── 30-min ORB collection ─────────────────────────────────────────────
+        # Collect bars 9:30–9:59 only (bt < orb30_close_time excludes the 10:00 bar)
         if not self.orb30_set:
-            if bt >= market_open:
+            if bt >= market_open and bt < orb30_close_time:
                 self._orb30_bars.append(bar)
             if bt >= orb30_close_time and self._orb30_bars:
                 self.orb30_high = max(b["high"] for b in self._orb30_bars)
@@ -329,8 +338,9 @@ class TickerState:
                 log.info(f"{ticker} ORB-30 set: ${self.orb30_low:.2f} – ${self.orb30_high:.2f}")
 
         # ── 60-min ORB collection ─────────────────────────────────────────────
+        # Collect bars 9:30–10:29 only (bt < orb60_close_time excludes the 10:30 bar)
         if not self.orb60_set:
-            if bt >= market_open:
+            if bt >= market_open and bt < orb60_close_time:
                 self._orb60_bars.append(bar)
             if bt >= orb60_close_time and self._orb60_bars:
                 self.orb60_high = max(b["high"] for b in self._orb60_bars)
@@ -407,13 +417,17 @@ class TickerState:
         # ── 30-min ORB retest ─────────────────────────────────────────────────
         if self.orb30_set and self.orb30_high and self.orb30_low:
             tol = getattr(self.config, "ORB_RETEST_TOL_PCT", 0.3) / 100
-            # Track breaks silently (no signal on initial breakout)
-            if close > self.orb30_high:
-                self._orb30_broke_up = True
-            elif close < self.orb30_low:
-                self._orb30_broke_dn = True
-            # Fire retest when price returns to ORB level
-            if self._orb30_broke_up and not self._alerted_orb30_ret_up:
+            # Track breaks silently; record the breakout bar_time so the retest
+            # cannot fire on the same bar that first crossed the ORB level.
+            if close > self.orb30_high and not self._orb30_broke_up:
+                self._orb30_broke_up           = True
+                self._orb30_broke_up_bar_time  = bt
+            elif close < self.orb30_low and not self._orb30_broke_dn:
+                self._orb30_broke_dn           = True
+                self._orb30_broke_dn_bar_time  = bt
+            # Fire retest: price must have returned to the level on a LATER bar
+            if (self._orb30_broke_up and not self._alerted_orb30_ret_up
+                    and self._orb30_broke_up_bar_time != bt):
                 dist_h = abs(close - self.orb30_high) / self.orb30_high
                 if dist_h <= tol:
                     signals.append(Signal(
@@ -424,7 +438,8 @@ class TickerState:
                                "dist_from_level": round(dist_h * 100, 3)},
                     ))
                     self._alerted_orb30_ret_up = True
-            if self._orb30_broke_dn and not self._alerted_orb30_ret_dn:
+            if (self._orb30_broke_dn and not self._alerted_orb30_ret_dn
+                    and self._orb30_broke_dn_bar_time != bt):
                 dist_l = abs(close - self.orb30_low) / self.orb30_low
                 if dist_l <= tol:
                     signals.append(Signal(
@@ -439,11 +454,14 @@ class TickerState:
         # ── 60-min ORB retest ─────────────────────────────────────────────────
         if self.orb60_set and self.orb60_high and self.orb60_low:
             tol = getattr(self.config, "ORB_RETEST_TOL_PCT", 0.3) / 100
-            if close > self.orb60_high:
-                self._orb60_broke_up = True
-            elif close < self.orb60_low:
-                self._orb60_broke_dn = True
-            if self._orb60_broke_up and not self._alerted_orb60_ret_up:
+            if close > self.orb60_high and not self._orb60_broke_up:
+                self._orb60_broke_up           = True
+                self._orb60_broke_up_bar_time  = bt
+            elif close < self.orb60_low and not self._orb60_broke_dn:
+                self._orb60_broke_dn           = True
+                self._orb60_broke_dn_bar_time  = bt
+            if (self._orb60_broke_up and not self._alerted_orb60_ret_up
+                    and self._orb60_broke_up_bar_time != bt):
                 dist_h = abs(close - self.orb60_high) / self.orb60_high
                 if dist_h <= tol:
                     signals.append(Signal(
@@ -454,7 +472,8 @@ class TickerState:
                                "dist_from_level": round(dist_h * 100, 3)},
                     ))
                     self._alerted_orb60_ret_up = True
-            if self._orb60_broke_dn and not self._alerted_orb60_ret_dn:
+            if (self._orb60_broke_dn and not self._alerted_orb60_ret_dn
+                    and self._orb60_broke_dn_bar_time != bt):
                 dist_l = abs(close - self.orb60_low) / self.orb60_low
                 if dist_l <= tol:
                     signals.append(Signal(
@@ -505,7 +524,7 @@ class AnalysisEngine:
         import pandas as pd
 
         root = getattr(self.config, "HIST_STORAGE_ROOT", "D:/CentralFolder/STOCKNOTIFY")
-        path = os.path.join(root, ticker, f"{ticker}_history.parquet")
+        path = os.path.join(root, ticker, f"{ticker}_1m.parquet")
         if not os.path.exists(path):
             log.debug(f"{ticker}: no parquet, MACD/PDH skipped")
             return
